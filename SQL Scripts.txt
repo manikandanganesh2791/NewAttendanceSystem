@@ -1,0 +1,228 @@
+--Created Table to load clean data in the MySQL engine
+create table attendance_s(
+ID int,
+CardSourceID int,
+CardHolderID int,
+DateIn varchar(12),
+DateOut varchar(12),
+HoursWorked int);
+
+--Loading the cleansed attendance_s file
+LOAD DATA LOCAL INFILE '~/attendance_s_clean.csv' INTO TABLE attendance_s 
+FIELDS TERMINATED BY ',' 
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\n';
+
+--Creating Date Dimension File
+create table date_dimension( 
+Id int not null auto_increment, 
+Date varchar(12), 
+PRIMARY KEY(Id));
+
+--Loading Data from List of school days .csv file into the date_dimension table
+LOAD DATA LOCAL INFILE '~/List of school days .csv' INTO TABLE date_dimension LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@col1) set Date=@col1;
+
+--Creating s_tardy table to insert data from attendance_s table that are
+--tardy
+create table s_tardy(
+ID int not null auto_increment, 
+CardHolderID int,
+Date varchar(12),
+Status varchar(5),
+PRIMARY KEY(ID));
+
+--inserting records into s_tardy file
+insert into s_tardy(CardHolderID, Date, Status)
+SELECT CardHolderID, DateIn, "tardy"
+from attendance_s
+where (DateIn IS NOT NULL and DateOut IS NULL) || ((DateIn IS NOT NULL and DateOut IS NOT NULL) and (DateIn != DateOut));
+
+--Creating s_early_departure table to insert data from attendance_s table 
+--that are under early departure
+create table s_early_departure(ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(15),
+PRIMARY KEY(ID));
+
+--inserting records into s_early_departure
+insert into s_early_departure(CardHolderID, Date, Status)
+select CardHolderID, DateOut, "Early departure"
+from attendance_s
+where (DateOut IS NOT NULL and DateIn IS NULL) || ((DateOut IS NOT NULL and DateIn IS NOT NULL) and (DateOut != DateIn));
+
+
+--Creating s_tardy_early_departure table to insert data from attendance_s table 
+--that are under both tardy and early departure
+create table s_tardy_early_departure(ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+
+--inserting records into s_tardy_early_departure table
+insert into s_tardy_early_departure(CardHolderID, Date, Status)
+select CardHolderID, DateOut, "Tardy and Early departure"
+from attendance_s
+where (DateOut IS NOT NULL and DateIn IS NOT NULL) and (DateIn = DateOut);
+
+--creating the target table
+create table attendance_main(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+
+--loading records into the main table from attendance_s system
+insert into attendance_main(CardHolderID, Date, Status)
+select CardHolderID, Date, Status from s_tardy
+union all
+select CardHolderID, Date, Status from s_early_departure
+union all
+select CardHolderID, Date, Status from s_tardy_early_departure;
+
+--Calculating duplicates in "s" system
+select CardHolderID, Date, count(*) 
+from attendance_main 
+group by CardHolderID, Date having count(*) >= 2;
+
+--Result = 29
+
+--Calculating ErrorPercentage in "s" system
+select (select count(*)
+from
+(select CardHolderID, Date, count(*)
+from attendance_main
+group by CardHolderID, Date
+having count(*) >= 2) as A)/
+(select count(*)
+from
+attendance_main) * 100 as Error_Percentage;
+
+--Result = 3.4731
+
+create table combinedname
+(ID int not null auto_increment, 
+name varchar(250),
+PRIMARY KEY(ID));
+
+insert into combinedname(name)
+select concat(CardHolderID,'|',Date) from attendance_main;
+
+alter table attendance_main
+add column combined_name varchar(255);
+
+ update attendance_main
+ set combined_name =
+ (select name from combinedname
+ where combinedname.ID = attendance_main.ID);
+
+ alter table attendance_main 
+ add column duplicate_check varchar(5);
+
+  update attendance_main
+  set duplicate_check = 'True'
+ where combined_name in
+ (select name
+ from combinedname
+ group by name
+ having count(*) >=2);
+
+update attendance_main
+  set duplicate_check = 'FALSE'
+ where combined_name IS NULL
+
+
+create table attendance_s_noduplicates(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_s_noduplicates.csv'
+INTO TABLE attendance_s_noduplicates
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+(@col1,@col2,@col3) set CardHolderID = @col1, Date=@col2, Status=@col3;
+
+
+drop table if exists attendance_main
+create table attendance_main(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_s_noduplicates.csv'
+INTO TABLE attendance_main
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+(@col1,@col2,@col3) set CardHolderID = @col1, Date=@col2, Status=@col3;
+
+
+--creating a table called 'attendance_c' for dumping cleansed data from
+--attendance_c.csv
+create table attendance_c(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+
+--loading data from attendance_c.csv file into the table
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_c_clean.csv' 
+INTO TABLE attendance_c 
+FIELDS TERMINATED BY ',' 
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\n' 
+(@col1,@col2,@col3) set CardHolderID=@col1,Date=@col2,Status=@col3;
+
+--Calculating duplicates in "c" system
+select CardHolderID, Date, count(*)
+from attendance_c
+group by CardHolderID, Date
+having count(*) >=2;
+
+--Calculating Error_Percentage in "c" system
+select (select count(*) from
+(select CardHolderID, Date, count(*)
+from attendance_c
+group by CardHolderID, Date
+having count(*) >= 2) as A)/(select count(*) from attendance_c) * 100 as Error_Percentage;
+
+alter table attendance_main
+add column combined_val varchar(50);
+
+alter table attendance_s_noduplicates
+add column combined_val varchar(50);
+
+update attendance_s_noduplicates
+set combined_val = concat(CardHolderID, '|', Date);
+
+insert into attendance_main(CardHolderID, Date, Status) 
+select CardHolderID, Date, Status 
+from attendance_c 
+where CONCAT(CardHolderID, '|', Date) NOT IN 
+(select CONCAT(CardHolderID, '|', Date) 
+from attendance_main);
+
+drop table if exists attendance_k;
+create table attendance_k(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k_clean.csv' 
+INTO TABLE attendance_k
+FIELDS TERMINATED BY ',' 
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\n' 
+(@col1,@col2,@col3,@col4) set CardHolderID=@col1,Status=@col2,Date=@col4;
