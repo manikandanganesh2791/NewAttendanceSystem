@@ -4,14 +4,36 @@ ID int,
 CardSourceID int,
 CardHolderID int,
 DateIn varchar(12),
+InTime varchar(5),
+ReportField1 varchar(100),
+ReportField2 varchar(100),
 DateOut varchar(12),
+OutTime varchar(5),
 HoursWorked int);
+
 
 --Loading the cleansed attendance_s file
 LOAD DATA LOCAL INFILE '~/attendance_s_clean.csv' INTO TABLE attendance_s 
 FIELDS TERMINATED BY ',' 
 ENCLOSED BY '"' 
-LINES TERMINATED BY '\n';
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES;
+
+
+drop table if exists attendance_k;
+create table attendance_k(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k_clean.csv' 
+INTO TABLE attendance_k
+FIELDS TERMINATED BY ',' 
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\n' 
+(@col1,@col2,@col3,@col4) set CardHolderID=@col1,Status=@col2,Date=@col4;
+
 
 --Creating Date Dimension File
 create table date_dimension( 
@@ -24,85 +46,106 @@ LOAD DATA LOCAL INFILE '~/List of school days .csv' INTO TABLE date_dimension LI
 IGNORE 1 LINES
 (@col1) set Date=@col1;
 
+
+
 --Creating s_tardy table to insert data from attendance_s table that are
 --tardy
+drop table if exists s_tardy;
 create table s_tardy(
-ID int not null auto_increment, 
+ID int not null auto_increment,
+attendance_sid int,
 CardHolderID int,
-Date varchar(12),
+InDate varchar(12),
+InTime varchar(5),
 Status varchar(5),
+ReportField1 varchar(100),
+ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
 --inserting records into s_tardy file
-insert into s_tardy(CardHolderID, Date, Status)
-SELECT CardHolderID, DateIn, "tardy"
+insert into s_tardy(attendance_sid,CardHolderID,InDate,InTime,Status,ReportField1,ReportField2)
+SELECT ID, CardHolderID, DateIn, InTime, "tardy", ReportField1, ReportField2
 from attendance_s
 where (DateIn IS NOT NULL and DateOut IS NULL) || ((DateIn IS NOT NULL and DateOut IS NOT NULL) and (DateIn != DateOut));
 
 --Creating s_early_departure table to insert data from attendance_s table 
 --that are under early departure
+drop table if exists s_early_departure;
 create table s_early_departure(ID int not null auto_increment,
+attendance_sid int,
 CardHolderID int,
-Date varchar(12),
+OutDate varchar(12),
+OutTime varchar(5),
 Status varchar(15),
+ReportField1 varchar(100),
+ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
 --inserting records into s_early_departure
-insert into s_early_departure(CardHolderID, Date, Status)
-select CardHolderID, DateOut, "Early departure"
+insert into s_early_departure(attendance_sid, CardHolderID, OutDate, OutTime, Status,ReportField1,ReportField2)
+select ID, CardHolderID, DateOut, OutTime, "Early departure", ReportField1, ReportField2
 from attendance_s
 where (DateOut IS NOT NULL and DateIn IS NULL) || ((DateOut IS NOT NULL and DateIn IS NOT NULL) and (DateOut != DateIn));
 
 
 --Creating s_tardy_early_departure table to insert data from attendance_s table 
 --that are under both tardy and early departure
+drop table if exists s_tardy_early_departure;
 create table s_tardy_early_departure(ID int not null auto_increment,
+attendance_sid int,
 CardHolderID int,
-Date varchar(12),
+InOutDate varchar(12),
+InTime varchar(5),
+OutTime varchar(5),
 Status varchar(25),
+ReportField1 varchar(100),
+ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
 --inserting records into s_tardy_early_departure table
-insert into s_tardy_early_departure(CardHolderID, Date, Status)
-select CardHolderID, DateOut, "Tardy and Early departure"
+insert into s_tardy_early_departure(attendance_sid,CardHolderID, InOutDate, InTime, OutTime, Status,ReportField1,ReportField2)
+select ID, CardHolderID, DateIn, InTime, OutTime, "tardy and Early departure", ReportField1, ReportField2
 from attendance_s
 where (DateOut IS NOT NULL and DateIn IS NOT NULL) and (DateIn = DateOut);
 
---creating the target table
-create table attendance_main(
+drop table if exists attendance_s_intermediate;
+create table attendance_s_intermediate(
 ID int not null auto_increment,
 CardHolderID int,
-Date varchar(12),
+Event_Date varchar(12),
 Status varchar(25),
 PRIMARY KEY(ID));
 
---loading records into the main table from attendance_s system
-insert into attendance_main(CardHolderID, Date, Status)
-select CardHolderID, Date, Status from s_tardy
+--loading records into the intermediate table from dimension tables
+insert into attendance_s_intermediate(CardHolderID, Event_Date, Status)
+select CardHolderID, InDate, Status from s_tardy
 union all
-select CardHolderID, Date, Status from s_early_departure
+select CardHolderID, OutDate, Status from s_early_departure
 union all
-select CardHolderID, Date, Status from s_tardy_early_departure;
+select CardHolderID, InOutDate, Status from s_tardy_early_departure;
 
---Calculating duplicates in "s" system
-select CardHolderID, Date, count(*) 
-from attendance_main 
-group by CardHolderID, Date having count(*) >= 2;
+--Calculating duplicates in the intermediate table
+select CardHolderID, Event_Date, count(*) 
+from attendance_s_intermediate
+group by CardHolderID, Event_Date having count(*) >= 2;
 
 --Result = 29
 
 --Calculating ErrorPercentage in "s" system
 select (select count(*)
 from
-(select CardHolderID, Date, count(*)
-from attendance_main
-group by CardHolderID, Date
+(select CardHolderID, Event_Date, count(*)
+from attendance_s_intermediate
+group by CardHolderID, Event_Date
 having count(*) >= 2) as A)/
 (select count(*)
 from
-attendance_main) * 100 as Error_Percentage;
+attendance_s_intermediate)* 100 as Error_Percentage;
 
 --Result = 3.4731
+
+alter table attendance_s_intermediate
+add column duplicate_check varchar(5);
 
 create table combinedname
 (ID int not null auto_increment, 
@@ -110,79 +153,49 @@ name varchar(250),
 PRIMARY KEY(ID));
 
 insert into combinedname(name)
-select concat(CardHolderID,'|',Date) from attendance_main;
+select concat(CardHolderID,'|',Event_Date) from attendance_s_intermediate;
 
-alter table attendance_main
-add column combined_name varchar(255);
+update attendance_s_intermediate
+set duplicate_check = 'True'
+where concat(CardHolderID, '|', Event_Date)in
+(select name
+from combined_name
+group by name
+having count(*) >=2);
 
- update attendance_main
- set combined_name =
- (select name from combinedname
- where combinedname.ID = attendance_main.ID);
+update attendance_s_intermediate
+set duplicate_check = 'False'
+where concat(CardHolderID, '|', Event_Date) not in
+(select name
+from combined_name
+group by name
+having count(*) >=2);
 
- alter table attendance_main 
- add column duplicate_check varchar(5);
+select * from attendance_s_intermediate where duplicate_check = 'True' order by CardHolderID
+into outfile '/var/lib/mysql-files/intermediate_inconsistent.csv'
+fields terminated by ','
+enclosed by '"'
+lines terminated by '\n';
 
-  update attendance_main
-  set duplicate_check = 'True'
- where combined_name in
- (select name
- from combinedname
- group by name
- having count(*) >=2);
+select * from attendance_s_intermediate where duplicate_check = 'False'
+into outfile '/var/lib/mysql-files/intermediate_consistent.csv'
+fields terminated by ','
+enclosed by '"'
+lines terminated by '\n';
 
-update attendance_main
-  set duplicate_check = 'FALSE'
- where combined_name IS NULL
-
-
-create table attendance_s_noduplicates(
+drop table if exists attendance_s_consistent;
+create table attendance_s_consistent(
 ID int not null auto_increment,
 CardHolderID int,
-Date varchar(12),
+Event_Date varchar(12),
 Status varchar(25),
 PRIMARY KEY(ID));
-
-LOAD DATA LOCAL INFILE '/vagrant_data/attendance_s_noduplicates.csv'
-INTO TABLE attendance_s_noduplicates
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_s_consistent.csv'
+INTO TABLE attendance_s_consistent
 FIELDS TERMINATED BY ','
-ENCLOSED BY '"'
 LINES TERMINATED BY '\n'
-(@col1,@col2,@col3) set CardHolderID = @col1, Date=@col2, Status=@col3;
-
-
-drop table if exists attendance_main
-create table attendance_main(
-ID int not null auto_increment,
-CardHolderID int,
-Date varchar(12),
-Status varchar(25),
-PRIMARY KEY(ID));
-
-LOAD DATA LOCAL INFILE '/vagrant_data/attendance_s_noduplicates.csv'
-INTO TABLE attendance_main
-FIELDS TERMINATED BY ','
-ENCLOSED BY '"'
-LINES TERMINATED BY '\n'
-(@col1,@col2,@col3) set CardHolderID = @col1, Date=@col2, Status=@col3;
-
-
---creating a table called 'attendance_c' for dumping cleansed data from
---attendance_c.csv
-create table attendance_c(
-ID int not null auto_increment,
-CardHolderID int,
-Date varchar(12),
-Status varchar(25),
-PRIMARY KEY(ID));
-
---loading data from attendance_c.csv file into the table
-LOAD DATA LOCAL INFILE '/vagrant_data/attendance_c_clean.csv' 
-INTO TABLE attendance_c 
-FIELDS TERMINATED BY ',' 
-ENCLOSED BY '"' 
-LINES TERMINATED BY '\n' 
-(@col1,@col2,@col3) set CardHolderID=@col1,Date=@col2,Status=@col3;
+IGNORE 1 LINES
+(@col1,@col2,@col3) set CardHolderID=@col1,Event_Date=@col2,Status=@col3;
 
 --Calculating duplicates in "c" system
 select CardHolderID, Date, count(*)
@@ -196,6 +209,52 @@ select (select count(*) from
 from attendance_c
 group by CardHolderID, Date
 having count(*) >= 2) as A)/(select count(*) from attendance_c) * 100 as Error_Percentage;
+
+drop table if exists attendance_c;
+create table attendance_c(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(25),
+PRIMARY KEY(ID));
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_c.csv' 
+INTO TABLE attendance_c 
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\n' 
+IGNORE 1 LINES
+(@col1,@col2,@col3) set CardHolderID=@col1,Date=@col2,Status=@col3;
+
+alter table attendance_c
+add column combined_name varchar(100);
+update attendance_c
+set combined_name = concat(CardHolderID, '|', Date);
+
+drop table if exists combined_name_c;
+create table combined_name_c (name varchar(100));
+insert into combined_name_c(name)
+select combined_name
+from attendance_c
+group by combined_name
+having count(*) >= 2
+
+select * from attendance_c
+where combined_name in
+(select name from combined_name_c)
+order by CardHolderID
+into outfile '/var/lib/mysql-files/attendance_c_inconsistent.csv'
+fields terminated by ','
+enclosed by '"'
+lines terminated by '\n';
+
+select * from attendance_c
+where combined_name not in
+(select name from combined_name_c)
+into outfile '/var/lib/mysql-files/attendance_c_consistent.csv'
+fields terminated by ','
+enclosed by '"'
+lines terminated by '\n';
+
 
 alter table attendance_main
 add column combined_val varchar(50);
@@ -226,3 +285,24 @@ FIELDS TERMINATED BY ','
 ENCLOSED BY '"' 
 LINES TERMINATED BY '\n' 
 (@col1,@col2,@col3,@col4) set CardHolderID=@col1,Status=@col2,Date=@col4;
+
+select CardHolderID, Date, Status 
+from attendance_k
+where CONCAT(CardHolderID, '|', Date) IN 
+(select CONCAT(CardHolderID, '|', Date) 
+from attendance_s_noduplicates);
+
+insert into attendance_main(CardHolderID, Date, Status) 
+select CardHolderID, Date, Status 
+from attendance_k
+where CONCAT(CardHolderID, '|', Date) NOT IN 
+(select CONCAT(CardHolderID, '|', Date) 
+from attendance_main);
+
+select DISTINCT(Date)
+from attendance_main
+where Date NOT IN
+(select Date
+from attendance_main
+where Status LIKE '%Absen%'
+group by Date);
