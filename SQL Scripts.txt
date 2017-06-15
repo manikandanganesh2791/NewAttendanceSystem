@@ -1,4 +1,3 @@
---Created Table to load clean data in the MySQL engine
 create table attendance_s(
 ID int,
 CardSourceID int,
@@ -11,28 +10,11 @@ DateOut varchar(12),
 OutTime varchar(5),
 HoursWorked int);
 
-
---Loading the cleansed attendance_s file
 LOAD DATA LOCAL INFILE '~/attendance_s_clean.csv' INTO TABLE attendance_s 
 FIELDS TERMINATED BY ',' 
 ENCLOSED BY '"' 
 LINES TERMINATED BY '\n'
 IGNORE 1 LINES;
-
-
-drop table if exists attendance_k;
-create table attendance_k(
-ID int not null auto_increment,
-CardHolderID int,
-Date varchar(12),
-Status varchar(25),
-PRIMARY KEY(ID));
-LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k_clean.csv' 
-INTO TABLE attendance_k
-FIELDS TERMINATED BY ',' 
-ENCLOSED BY '"' 
-LINES TERMINATED BY '\n' 
-(@col1,@col2,@col3,@col4) set CardHolderID=@col1,Status=@col2,Date=@col4;
 
 
 --Creating Date Dimension File
@@ -46,10 +28,6 @@ LOAD DATA LOCAL INFILE '~/List of school days .csv' INTO TABLE date_dimension LI
 IGNORE 1 LINES
 (@col1) set Date=@col1;
 
-
-
---Creating s_tardy table to insert data from attendance_s table that are
---tardy
 drop table if exists s_tardy;
 create table s_tardy(
 ID int not null auto_increment,
@@ -62,14 +40,11 @@ ReportField1 varchar(100),
 ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
---inserting records into s_tardy file
 insert into s_tardy(attendance_sid,CardHolderID,InDate,InTime,Status,ReportField1,ReportField2)
 SELECT ID, CardHolderID, DateIn, InTime, "tardy", ReportField1, ReportField2
 from attendance_s
 where (DateIn IS NOT NULL and DateOut IS NULL) || ((DateIn IS NOT NULL and DateOut IS NOT NULL) and (DateIn != DateOut));
 
---Creating s_early_departure table to insert data from attendance_s table 
---that are under early departure
 drop table if exists s_early_departure;
 create table s_early_departure(ID int not null auto_increment,
 attendance_sid int,
@@ -81,15 +56,11 @@ ReportField1 varchar(100),
 ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
---inserting records into s_early_departure
 insert into s_early_departure(attendance_sid, CardHolderID, OutDate, OutTime, Status,ReportField1,ReportField2)
 select ID, CardHolderID, DateOut, OutTime, "Early departure", ReportField1, ReportField2
 from attendance_s
 where (DateOut IS NOT NULL and DateIn IS NULL) || ((DateOut IS NOT NULL and DateIn IS NOT NULL) and (DateOut != DateIn));
 
-
---Creating s_tardy_early_departure table to insert data from attendance_s table 
---that are under both tardy and early departure
 drop table if exists s_tardy_early_departure;
 create table s_tardy_early_departure(ID int not null auto_increment,
 attendance_sid int,
@@ -102,7 +73,6 @@ ReportField1 varchar(100),
 ReportField2 varchar(100),
 PRIMARY KEY(ID));
 
---inserting records into s_tardy_early_departure table
 insert into s_tardy_early_departure(attendance_sid,CardHolderID, InOutDate, InTime, OutTime, Status,ReportField1,ReportField2)
 select ID, CardHolderID, DateIn, InTime, OutTime, "tardy and Early departure", ReportField1, ReportField2
 from attendance_s
@@ -116,7 +86,6 @@ Event_Date varchar(12),
 Status varchar(25),
 PRIMARY KEY(ID));
 
---loading records into the intermediate table from dimension tables
 insert into attendance_s_intermediate(CardHolderID, Event_Date, Status)
 select CardHolderID, InDate, Status from s_tardy
 union all
@@ -124,14 +93,10 @@ select CardHolderID, OutDate, Status from s_early_departure
 union all
 select CardHolderID, InOutDate, Status from s_tardy_early_departure;
 
---Calculating duplicates in the intermediate table
 select CardHolderID, Event_Date, count(*) 
 from attendance_s_intermediate
 group by CardHolderID, Event_Date having count(*) >= 2;
 
---Result = 29
-
---Calculating ErrorPercentage in "s" system
 select (select count(*)
 from
 (select CardHolderID, Event_Date, count(*)
@@ -142,7 +107,6 @@ having count(*) >= 2) as A)/
 from
 attendance_s_intermediate)* 100 as Error_Percentage;
 
---Result = 3.4731
 
 alter table attendance_s_intermediate
 add column duplicate_check varchar(5);
@@ -197,13 +161,11 @@ LINES TERMINATED BY '\n'
 IGNORE 1 LINES
 (@col1,@col2,@col3) set CardHolderID=@col1,Event_Date=@col2,Status=@col3;
 
---Calculating duplicates in "c" system
 select CardHolderID, Date, count(*)
 from attendance_c
 group by CardHolderID, Date
 having count(*) >=2;
 
---Calculating Error_Percentage in "c" system
 select (select count(*) from
 (select CardHolderID, Date, count(*)
 from attendance_c
@@ -255,54 +217,164 @@ fields terminated by ','
 enclosed by '"'
 lines terminated by '\n';
 
-
-alter table attendance_main
-add column combined_val varchar(50);
-
-alter table attendance_s_noduplicates
-add column combined_val varchar(50);
-
-update attendance_s_noduplicates
-set combined_val = concat(CardHolderID, '|', Date);
-
-insert into attendance_main(CardHolderID, Date, Status) 
-select CardHolderID, Date, Status 
-from attendance_c 
-where CONCAT(CardHolderID, '|', Date) NOT IN 
-(select CONCAT(CardHolderID, '|', Date) 
-from attendance_main);
+drop table if exists attendance_c_intermediate;
+create table attendance_c_intermediate(
+ID int not null auto_increment,
+CardHolderID int,
+Event_Date varchar(12),
+Status varchar(50),
+PRIMARY KEY(ID));
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_c_intermediate.csv'
+INTO TABLE attendance_c_intermediate
+FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@col1,@col2,@col3) set CardHolderID=@col1,Event_Date=@col2,Status=@col3;
 
 drop table if exists attendance_k;
 create table attendance_k(
 ID int not null auto_increment,
 CardHolderID int,
 Date varchar(12),
-Status varchar(25),
+Status varchar(50),
 PRIMARY KEY(ID));
-LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k_clean.csv' 
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k.csv' 
 INTO TABLE attendance_k
 FIELDS TERMINATED BY ',' 
 ENCLOSED BY '"' 
 LINES TERMINATED BY '\n' 
+IGNORE 1 LINES
 (@col1,@col2,@col3,@col4) set CardHolderID=@col1,Status=@col2,Date=@col4;
 
-select CardHolderID, Date, Status 
-from attendance_k
-where CONCAT(CardHolderID, '|', Date) IN 
-(select CONCAT(CardHolderID, '|', Date) 
-from attendance_s_noduplicates);
+select * 
+from attendance_k 
+into outfile '/var/lib/mysql-files/attendance_k_inconsistent.csv'
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
 
-insert into attendance_main(CardHolderID, Date, Status) 
-select CardHolderID, Date, Status 
-from attendance_k
-where CONCAT(CardHolderID, '|', Date) NOT IN 
-(select CONCAT(CardHolderID, '|', Date) 
+select * 
+from attendance_k  
+where concat(CardHolderID,'|',Date) IN  
+(select concat(CardHolderID,'|',Date)
+from attendance_k  
+group by concat(CardHolderID,'|',Date) 
+having count(*)>=2)
+into outfile '/var/lib/mysql-files/inconsistent_k.csv'
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
+
+drop table if exists attendance_k_intermediate;
+create table attendance_k_intermediate(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(50),
+PRIMARY KEY(ID));
+LOAD DATA LOCAL INFILE '/vagrant_data/attendance_k_intermediate.csv' 
+INTO TABLE attendance_k_intermediate
+FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n' 
+(@col1,@col2,@col3) set CardHolderID=@col1,Date=@col2,Status=@col3;
+
+
+drop table if exists attendance_main;
+create table attendance_main(
+ID int not null auto_increment,
+CardHolderID int,
+Date varchar(12),
+Status varchar(50),
+PRIMARY KEY(ID));
+
+insert into attendance_main(CardHolderID,Date,Status)
+select CardHolderID, Date, Status from attendance_k_intermediate
+union all
+select CardHolderID, Event_Date, Status from attendance_s_intermediate
+where concat(CardHolderID,'|',Event_Date) not in
+(select concat(CardHolderID,'|',Date) from attendance_k_intermediate)
+union all
+select CardHolderID, Event_Date, Status from attendance_c_intermediate
+where concat(CardHolderID,'|',Event_Date) not in
+(select concat(CardHolderID,'|',Date) from attendance_k_intermediate
+union all
+select concat(CardHolderID,'|',Event_Date) from attendance_s_intermediate);
+
+select (select count(*) from attendance_k_intermediate) + 
+(select count(*) from attendance_s_intermediate) + 
+(select count(*) from attendance_c_intermediate) as total_number_records;
+
+select (select count(*) from attendance_k_intermediate) + 
+(select count(*) from attendance_s_intermediate) + 
+(select count(*) from attendance_c_intermediate) -
+(select count(*) from attendance_main) as records_eliminated;
+
+(select Date, 
+case
+	when DAYOFWEEK(Date) = 1 then 'Sunday'
+	when DAYOFWEEK(Date) = 2 then 'Monday'
+	when DAYOFWEEK(Date) = 3 then 'Tuesday'
+	when DAYOFWEEK(Date) = 4 then 'Wednesday'
+	when DAYOFWEEK(Date) = 5 then 'Thursday'
+	when DAYOFWEEK(Date) = 6 then 'Friday'
+	when DAYOFWEEK(Date) = 7 then 'Saturday'
+end as Day, 
+count(Status) as Count_of_Absent
+from
+(select STR_TO_DATE(Str_Date, '%m/%d/%Y') as Date,Status
+from
+(select REPLACE(Date,'"','') as Str_Date, Status
+from attendance_main
+where Status LIKE '%Absen%') as A) as B
+where YEAR(Date) = 2016
+group by Date
+order by count(Status) desc
+limit 1)
+union all
+(select Date, 
+case
+	when DAYOFWEEK(Date) = 1 then 'Sunday'
+	when DAYOFWEEK(Date) = 2 then 'Monday'
+	when DAYOFWEEK(Date) = 3 then 'Tuesday'
+	when DAYOFWEEK(Date) = 4 then 'Wednesday'
+	when DAYOFWEEK(Date) = 5 then 'Thursday'
+	when DAYOFWEEK(Date) = 6 then 'Friday'
+	when DAYOFWEEK(Date) = 7 then 'Saturday'
+end as Day, 
+count(Status) as count_of_absent
+from
+(select STR_TO_DATE(Str_Date, '%m/%d/%Y') as Date,Status
+from
+(select REPLACE(Date,'"','') as Str_Date, Status
+from attendance_main
+where Status LIKE '%Absen%') as A) as B
+where YEAR(Date) = 2017
+group by Date
+order by count(Status) desc
+limit 1);
+
+select case
+	when DAYOFWEEK(Date) = 1 then 'Sunday'
+	when DAYOFWEEK(Date) = 2 then 'Monday'
+	when DAYOFWEEK(Date) = 3 then 'Tuesday'
+	when DAYOFWEEK(Date) = 4 then 'Wednesday'
+	when DAYOFWEEK(Date) = 5 then 'Thursday'
+	when DAYOFWEEK(Date) = 6 then 'Friday'
+	when DAYOFWEEK(Date) = 7 then 'Saturday'
+end as DAY_OF_WEEK, 
+count(Status) as Count_Of_Tardies_And_Absences
+from
+(select STR_TO_DATE(Str_Date, '%m/%d/%Y') as Date,Status
+from
+(select REPLACE(Date,'"','') as Str_Date, Status
+from attendance_main
+where Status LIKE '%Absen%' or Status LIKE '%ardy%') as A) as B
+group by DAYOFWEEK(Date)
+order by count(Status) desc
+limit 1;
+
+select Date
+from date_dimension
+where Date not in
+(select distinct (replace(Date,'"',''))
 from attendance_main);
-
-select DISTINCT(Date)
-from attendance_main
-where Date NOT IN
-(select Date
-from attendance_main
-where Status LIKE '%Absen%'
-group by Date);
